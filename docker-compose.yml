@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  # -------------------------------------------------------------
+  # Primary Application Database (PostgreSQL)
+  # -------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: bytevipers-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bytevipers}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vipersecret2026}
+      POSTGRES_DB: ${POSTGRES_DB:-bytevipers}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bytevipers -d bytevipers"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------------------------------------------
+  # Primary Cache & Rate-Limiter (Redis)
+  # -------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: bytevipers-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # -------------------------------------------------------------
+  # ByteVipers FastAPI Backend
+  # -------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: bytevipers-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-bytevipers}:${POSTGRES_PASSWORD:-vipersecret2026}@db:5432/${POSTGRES_DB:-bytevipers}}
+      SECRET_KEY: ${SECRET_KEY}
+      JUDGE0_API_URL: ${JUDGE0_API_URL:-http://judge0-server:2358}
+      JUDGE0_FALLBACK_ISOLATED: ${JUDGE0_FALLBACK_ISOLATED:-false}
+      ALLOW_SUBPROCESS_FALLBACK_IN_PRODUCTION: "false"
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-'["http://localhost:3000","http://127.0.0.1:3000"]'}
+    volumes:
+      - ./backend:/app
+
+  # -------------------------------------------------------------
+  # ByteVipers Next.js Frontend
+  # -------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: bytevipers-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+
+  # -------------------------------------------------------------
+  # Judge0 Self-Hosted CE (Optional for full isolated sandboxing)
+  # -------------------------------------------------------------
+  judge0-server:
+    image: judge0/judge0:1.13.0
+    container_name: bytevipers-judge0
+    restart: unless-stopped
+    ports:
+      - "2358:2358"
+    privileged: true
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    depends_on:
+      - redis
+
+volumes:
+  postgres_data:
+  redis_data:

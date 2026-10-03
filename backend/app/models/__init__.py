@@ -92,6 +92,9 @@ class User(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     is_suspended = Column(Boolean, default=False, nullable=False)
     suspension_reason = Column(Text, nullable=True)
+    must_change_password = Column(Boolean, default=False, nullable=False)
+    temp_password_expires_at = Column(DateTime(timezone=True), nullable=True)
+    token_version = Column(Integer, default=1, nullable=False)
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
@@ -379,6 +382,10 @@ class AssignmentSubmission(Base):
     score = Column(Float, default=0.0, nullable=False)
     attempt_number = Column(Integer, default=1, nullable=False)
     submitted_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("assignment_id", "student_id", "problem_id", name="uq_assignment_student_problem"),
+    )
 
     assignment = relationship("Assignment", back_populates="assignment_submissions")
     student = relationship("User", foreign_keys=[student_id])

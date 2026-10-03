@@ -200,7 +200,12 @@ export default function StudentDashboardPage() {
                         Due: {new Date(a.due_date).toLocaleDateString()}
                       </span>
                     </div>
-                    <p className="text-[11px] text-[#9AA6B5] mt-1">{a.class_name || "General Class"}</p>
+                    <div className="flex items-center justify-between mt-1 text-[11px]">
+                      <span className="text-[#9AA6B5]">{a.class_name || "General Class"}</span>
+                      <span className="text-emerald-400 font-mono font-semibold">
+                        Score: {a.user_total_score || 0} pts
+                      </span>
+                    </div>
                   </Link>
                 ))}
               </div>
@@ -235,22 +240,25 @@ export default function StudentDashboardPage() {
                     <div>
                       <p className="font-bold text-[#F5F7FA]">{sub.problem_title || `Problem #${sub.problem_id}`}</p>
                       <p className="text-[11px] text-[#5F6B7C]">
-                        {new Date(sub.created_at).toLocaleString()} • Python
+                        {new Date(sub.created_at).toLocaleString()} • {sub.language || "Python"}
                       </p>
                     </div>
                     <div className="text-right">
-                      <span
-                        className={`text-xs font-bold ${
-                          sub.verdict === "Accepted"
-                            ? "text-emerald-400"
-                            : "text-red-400"
-                        }`}
-                      >
-                        {sub.verdict || sub.status}
-                      </span>
-                      <p className="text-[10px] text-[#5F6B7C]">
-                        {sub.passed_tests}/{sub.total_tests} tests
-                      </p>
+                      {sub.marks !== null && sub.marks !== undefined ? (
+                        <div>
+                          <span className="text-xs font-bold text-emerald-400 font-mono">
+                            {sub.marks} / {sub.max_marks || 100} pts
+                          </span>
+                          <p className="text-[10px] text-[#FFD978]">Evaluated</p>
+                        </div>
+                      ) : (
+                        <div>
+                          <span className="text-xs font-bold text-[#36C5FF]">
+                            {sub.status === "SUBMITTED" ? "Submitted" : sub.status}
+                          </span>
+                          <p className="text-[10px] text-[#5F6B7C]">Pending Review</p>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}

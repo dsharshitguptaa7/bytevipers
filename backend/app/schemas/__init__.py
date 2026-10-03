@@ -35,6 +35,7 @@ class UserOut(BaseModel):
     suspension_reason: Optional[str] = None
     permissions: List[str] = []
     verification_status: Optional[str] = None
+    must_change_password: bool = False
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -58,6 +59,26 @@ class AdminUserUpdate(BaseModel):
     is_suspended: Optional[bool] = None
     suspension_reason: Optional[str] = None
     permissions: Optional[List[str]] = None
+
+class PasswordAssistanceResponse(BaseModel):
+    message: str
+    user_id: int
+    username: str
+    temporary_password: str
+    expires_at: datetime
+    must_change_password: bool
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, description="Current password or temporary password")
+    new_password: str = Field(..., min_length=8, max_length=100, description="New permanent password")
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("New password must be at least 8 characters long.")
+        return v
+
 
 # ----------------- Verification Schemas -----------------
 class VerificationApply(BaseModel):
@@ -599,6 +620,13 @@ class AssignmentProblemOut(BaseModel):
     order_index: int
     solved: bool = False
     best_score: float = 0.0
+    status: str = "Unsolved"
+    submission_id: Optional[int] = None
+    marks: Optional[float] = None
+    max_marks: Optional[float] = None
+    teacher_feedback: Optional[str] = None
+    submitted_at: Optional[datetime] = None
+    evaluated_at: Optional[datetime] = None
 
 class AssignmentStudentOut(BaseModel):
     id: int

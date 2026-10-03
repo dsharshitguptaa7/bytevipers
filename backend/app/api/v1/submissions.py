@@ -2,13 +2,14 @@ from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select, and_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.core.database import get_db
 from app.core.dependencies import require_verified_student, require_authenticated_user
 from app.models import (
     User, Problem, Submission, SubmissionStatus,
-    Assignment, ClassMember
+    Assignment, ClassMember, AssignmentProblem, AssignmentSubmission, ProblemProgress
 )
 from app.schemas import (
     CodeRunRequest, CodeRunResponse,
@@ -165,6 +166,7 @@ async def submit_code(
     """
     Submits final code for manual instructor evaluation.
     Judge0 is temporarily sidelined: code is not executed automatically.
+    Prevents duplicate submissions for the same question.
     """
     query = (
         select(Problem)
@@ -178,11 +180,74 @@ async def submit_code(
     if not problem.is_published and user.role != "teacher":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Problem is not published.")
 
-    # Assignment validations if assignment_id is supplied
+    # Determine assignment context
+    assignment_id = sub_in.assignment_id
+    if not assignment_id:
+        # Check if this problem belongs to an active assignment in student's enrolled classes
+        active_assign_stmt = (
+            select(AssignmentProblem.assignment_id)
+            .join(Assignment, Assignment.id == AssignmentProblem.assignment_id)
+            .join(ClassMember, ClassMember.class_id == Assignment.class_id)
+            .where(
+                AssignmentProblem.problem_id == problem.id,
+                ClassMember.user_id == user.id,
+                ClassMember.status == "active",
+                Assignment.is_published == True,
+            )
+            .order_by(Assignment.due_date.asc())
+        )
+        active_assign_res = await db.execute(active_assign_stmt)
+        detected_assign_id = active_assign_res.scalars().first()
+        if detected_assign_id:
+            assignment_id = detected_assign_id
+
+    # Enforce duplicate submission prevention
+    if assignment_id:
+        dup_sub_stmt = select(Submission).where(
+            Submission.user_id == user.id,
+            Submission.problem_id == problem.id,
+            Submission.assignment_id == assignment_id,
+            Submission.is_draft == False,
+            Submission.status != SubmissionStatus.FAILED.value,
+        )
+        dup_sub = (await db.execute(dup_sub_stmt)).scalar_one_or_none()
+        if dup_sub:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You have already submitted a solution for this question. Duplicate submissions are not allowed.",
+            )
+
+        dup_as_stmt = select(AssignmentSubmission).where(
+            AssignmentSubmission.assignment_id == assignment_id,
+            AssignmentSubmission.student_id == user.id,
+            AssignmentSubmission.problem_id == problem.id,
+        )
+        dup_as = (await db.execute(dup_as_stmt)).scalar_one_or_none()
+        if dup_as:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You have already submitted a solution for this question. Duplicate submissions are not allowed.",
+            )
+    else:
+        dup_sub_stmt = select(Submission).where(
+            Submission.user_id == user.id,
+            Submission.problem_id == problem.id,
+            Submission.assignment_id.is_(None),
+            Submission.is_draft == False,
+            Submission.status != SubmissionStatus.FAILED.value,
+        )
+        dup_sub = (await db.execute(dup_sub_stmt)).scalar_one_or_none()
+        if dup_sub:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You have already submitted a solution for this question. Duplicate submissions are not allowed.",
+            )
+
+    # Assignment validations if assignment_id is present
     is_practice = True
-    if sub_in.assignment_id:
+    if assignment_id:
         is_practice = False
-        assign_stmt = select(Assignment).where(Assignment.id == sub_in.assignment_id)
+        assign_stmt = select(Assignment).where(Assignment.id == assignment_id)
         assign_res = await db.execute(assign_stmt)
         assignment = assign_res.scalar_one_or_none()
         if not assignment or not assignment.is_published:
@@ -216,18 +281,20 @@ async def submit_code(
 
     now_utc = datetime.now(timezone.utc)
     if existing_draft:
+        existing_draft.assignment_id = assignment_id
         existing_draft.source_code = sub_in.source_code
         existing_draft.language = sub_in.language
         existing_draft.status = SubmissionStatus.SUBMITTED.value
         existing_draft.is_draft = False
         existing_draft.submitted_at = now_utc
         existing_draft.max_marks = problem.max_marks or 100.0
+        existing_draft.is_practice = is_practice
         submission = existing_draft
     else:
         submission = Submission(
             user_id=user.id,
             problem_id=problem.id,
-            assignment_id=sub_in.assignment_id,
+            assignment_id=assignment_id,
             source_code=sub_in.source_code,
             language=sub_in.language,
             status=SubmissionStatus.SUBMITTED.value,
@@ -238,8 +305,49 @@ async def submit_code(
         )
         db.add(submission)
 
-    await db.commit()
-    await db.refresh(submission)
+    await db.flush()
+
+    if assignment_id:
+        as_sub = AssignmentSubmission(
+            assignment_id=assignment_id,
+            student_id=user.id,
+            problem_id=problem.id,
+            submission_id=submission.id,
+            score=0.0,
+            attempt_number=1,
+            submitted_at=now_utc,
+        )
+        db.add(as_sub)
+
+    # Update or create ProblemProgress (ATTEMPTED)
+    prog_stmt = select(ProblemProgress).where(
+        ProblemProgress.user_id == user.id,
+        ProblemProgress.problem_id == problem.id,
+    )
+    prog = (await db.execute(prog_stmt)).scalar_one_or_none()
+    if prog:
+        prog.best_submission_id = submission.id
+        prog.attempts_count += 1
+        prog.updated_at = now_utc
+    else:
+        prog = ProblemProgress(
+            user_id=user.id,
+            problem_id=problem.id,
+            status="ATTEMPTED",
+            best_submission_id=submission.id,
+            attempts_count=1,
+        )
+        db.add(prog)
+
+    try:
+        await db.commit()
+        await db.refresh(submission)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A submission for this question is already recorded. Duplicate submissions are not allowed.",
+        )
 
     return SubmissionOut(
         id=submission.id,
@@ -273,7 +381,7 @@ async def get_submission(
 ):
     """
     Retrieves submission details.
-    Conceals marks and teacher feedback from students until status is PUBLISHED.
+    Conceals un-evaluated marks and feedback from students until published or evaluated.
     """
     query = (
         select(Submission)

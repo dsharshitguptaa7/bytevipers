@@ -101,56 +101,79 @@ export default function AssignmentDetailPage({ params }: { params: Promise<{ id:
           </h3>
 
           <div className="space-y-3">
-            {assignment.problems?.map((ap: any, idx: number) => (
-              <div
-                key={ap.problem_id}
-                className="p-4 rounded-xl bg-[#0B0E14] border border-[#1C2330] hover:border-[#168BFF]/40 transition-all flex items-center justify-between gap-4"
-              >
-                <div className="flex items-center gap-3">
-                  <span className="w-6 h-6 rounded-lg bg-[#10151D] text-[#36C5FF] border border-[#1C2330] flex items-center justify-center font-mono text-xs font-bold">
-                    {idx + 1}
-                  </span>
-                  <div>
-                    <h4 className="text-sm font-bold text-[#F5F7FA]">{ap.title}</h4>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span
-                        className={`text-[10px] px-2 py-0.5 rounded font-semibold ${
-                          ap.difficulty === "Easy"
-                            ? "text-emerald-400 bg-emerald-500/10 border border-emerald-500/30"
-                            : ap.difficulty === "Medium"
-                            ? "text-[#FFD978] bg-[#F5BD45]/10 border border-[#F5BD45]/30"
-                            : "text-red-400 bg-red-500/10 border border-red-500/30"
-                        }`}
-                      >
-                        {ap.difficulty}
-                      </span>
-                      <span className="text-[11px] text-[#5F6B7C] font-mono">{ap.points} pts</span>
+            {assignment.problems?.map((ap: any, idx: number) => {
+              const isSubmitted = ap.status && ap.status !== "Unsolved";
+              const isEvaluated = ap.status === "Evaluated" || ap.status === "Solved" || (ap.marks !== null && ap.marks !== undefined);
+              const isSolved = ap.solved || ap.status === "Solved";
+
+              return (
+                <div
+                  key={ap.problem_id}
+                  className="p-4 rounded-xl bg-[#0B0E14] border border-[#1C2330] hover:border-[#168BFF]/40 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                >
+                  <div className="flex items-start sm:items-center gap-3">
+                    <span className="w-6 h-6 rounded-lg bg-[#10151D] text-[#36C5FF] border border-[#1C2330] flex items-center justify-center font-mono text-xs font-bold shrink-0 mt-0.5 sm:mt-0">
+                      {idx + 1}
+                    </span>
+                    <div>
+                      <h4 className="text-sm font-bold text-[#F5F7FA]">{ap.title}</h4>
+                      <div className="flex flex-wrap items-center gap-2 mt-1">
+                        <span
+                          className={`text-[10px] px-2 py-0.5 rounded font-semibold ${
+                            ap.difficulty === "Easy"
+                              ? "text-emerald-400 bg-emerald-500/10 border border-emerald-500/30"
+                              : ap.difficulty === "Medium"
+                              ? "text-[#FFD978] bg-[#F5BD45]/10 border border-[#F5BD45]/30"
+                              : "text-red-400 bg-red-500/10 border border-red-500/30"
+                          }`}
+                        >
+                          {ap.difficulty}
+                        </span>
+                        <span className="text-[11px] text-[#5F6B7C] font-mono">{ap.points} pts max</span>
+                        {ap.teacher_feedback && (
+                          <span className="text-[10px] text-[#FFD978] bg-[#F5BD45]/10 border border-[#F5BD45]/30 px-2 py-0.5 rounded italic">
+                            Feedback: &quot;{ap.teacher_feedback.length > 40 ? ap.teacher_feedback.slice(0, 40) + '...' : ap.teacher_feedback}&quot;
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <div className="flex items-center gap-4">
-                  {ap.solved ? (
-                    <span className="flex items-center gap-1 text-xs font-bold text-emerald-400">
-                      <CheckCircle2 className="w-4 h-4" /> Solved ({ap.best_score} pts)
-                    </span>
-                  ) : ap.best_score > 0 ? (
-                    <span className="text-xs font-bold text-[#FFD978]">
-                      Partial: {ap.best_score} pts
-                    </span>
-                  ) : (
-                    <span className="text-xs text-[#5F6B7C]">Unsolved</span>
-                  )}
+                  <div className="flex items-center justify-between sm:justify-end gap-4 shrink-0">
+                    {isSolved ? (
+                      <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-400 font-mono">
+                        <CheckCircle2 className="w-4 h-4" /> Solved ({ap.best_score ?? ap.points} pts)
+                      </span>
+                    ) : isEvaluated ? (
+                      <span className="flex items-center gap-1.5 text-xs font-bold text-[#FFD978] font-mono">
+                        <Trophy className="w-4 h-4 text-[#F5BD45]" /> Evaluated ({ap.best_score ?? 0} / {ap.points} pts)
+                      </span>
+                    ) : ap.status === "Under Review" ? (
+                      <span className="flex items-center gap-1.5 text-xs font-semibold text-sky-400 font-mono">
+                        <Clock className="w-4 h-4" /> Under Review
+                      </span>
+                    ) : ap.status === "Submitted" ? (
+                      <span className="flex items-center gap-1.5 text-xs font-semibold text-[#36C5FF] font-mono">
+                        <Clock className="w-4 h-4" /> Submitted (Pending)
+                      </span>
+                    ) : (
+                      <span className="text-xs text-[#5F6B7C] font-mono">Unsolved (0 pts)</span>
+                    )}
 
-                  <Link
-                    href={`/problems/${ap.slug}`}
-                    className="px-4 py-2 rounded-xl bg-[#10151D] hover:bg-[#168BFF] hover:text-[#050608] text-[#36C5FF] border border-[#168BFF]/30 font-bold text-xs transition-colors flex items-center gap-1.5"
-                  >
-                    Solve Problem <ArrowRight className="w-3.5 h-3.5" />
-                  </Link>
+                    <Link
+                      href={`/problems/${ap.slug}?assignment_id=${assignment.id}${isSubmitted ? '&tab=submissions' : ''}`}
+                      className={`px-4 py-2 rounded-xl font-bold text-xs transition-colors flex items-center gap-1.5 ${
+                        isSubmitted
+                          ? "bg-[#161D28] text-[#F5F7FA] hover:bg-[#1C2433] border border-[#1C2330]"
+                          : "bg-[#10151D] hover:bg-[#168BFF] hover:text-[#050608] text-[#36C5FF] border border-[#168BFF]/30"
+                      }`}
+                    >
+                      {isSubmitted ? "View Submission" : "Solve Problem"} <ArrowRight className="w-3.5 h-3.5" />
+                    </Link>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>

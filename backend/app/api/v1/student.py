@@ -6,7 +6,7 @@ from sqlalchemy.orm import selectinload
 from app.core.database import get_db
 from app.core.dependencies import require_verified_student
 from app.models import (
-    User, Problem, Submission, ProblemProgress, Tag, Assignment, ClassMember,
+    User, Problem, Submission, SubmissionStatus, ProblemProgress, Tag, Assignment, ClassMember,
     AssignmentProblem, AssignmentSubmission
 )
 from app.schemas import StudentDashboardOut, SubmissionOut, AssignmentStudentOut, AssignmentProblemOut
@@ -50,26 +50,36 @@ async def get_student_dashboard(
     )
     recent_res = await db.execute(recent_stmt)
     recent_subs = recent_res.scalars().all()
-    recent_out = [
-        SubmissionOut(
-            id=s.id,
-            problem_id=s.problem_id,
-            problem_title=s.problem.title if s.problem else None,
-            assignment_id=s.assignment_id,
-            language=s.language,
-            status=s.status,
-            verdict=s.verdict,
-            execution_time_ms=s.execution_time_ms,
-            memory_used_kb=s.memory_used_kb,
-            error_message=s.error_message,
-            total_tests=s.total_tests,
-            passed_tests=s.passed_tests,
-            is_practice=s.is_practice,
-            created_at=s.created_at,
-            test_results=None,
+    recent_out = []
+    for s in recent_subs:
+        is_published = s.status == SubmissionStatus.PUBLISHED.value
+        recent_out.append(
+            SubmissionOut(
+                id=s.id,
+                problem_id=s.problem_id,
+                problem_title=s.problem.title if s.problem else None,
+                assignment_id=s.assignment_id,
+                language=s.language,
+                status=s.status,
+                verdict=s.verdict,
+                execution_time_ms=s.execution_time_ms,
+                memory_used_kb=s.memory_used_kb,
+                error_message=s.error_message,
+                total_tests=s.total_tests,
+                passed_tests=s.passed_tests,
+                is_practice=s.is_practice,
+                marks=s.marks if is_published else None,
+                max_marks=s.max_marks,
+                teacher_feedback=s.teacher_feedback if is_published else None,
+                evaluator_id=s.evaluator_id if is_published else None,
+                evaluated_at=s.evaluated_at if is_published else None,
+                published_at=s.published_at if is_published else None,
+                is_draft=s.is_draft,
+                submitted_at=s.submitted_at,
+                created_at=s.created_at,
+                test_results=None,
+            )
         )
-        for s in recent_subs
-    ]
 
     # 4. Difficulty stats (Easy, Medium, Hard)
     difficulty_stats = {"Easy": {"solved": 0, "total": 0}, "Medium": {"solved": 0, "total": 0}, "Hard": {"solved": 0, "total": 0}}
@@ -125,6 +135,16 @@ async def get_student_dashboard(
         )
         assign_res = await db.execute(assign_stmt)
         for a in assign_res.scalars().all():
+            score_stmt = select(
+                func.coalesce(func.sum(AssignmentSubmission.score), 0.0),
+                func.count(AssignmentSubmission.id)
+            ).where(
+                AssignmentSubmission.assignment_id == a.id,
+                AssignmentSubmission.student_id == user.id,
+            )
+            score_res = await db.execute(score_stmt)
+            tot_sc, att_cnt = score_res.first() or (0.0, 0)
+
             active_assignments.append(
                 AssignmentStudentOut(
                     id=a.id,
@@ -138,8 +158,8 @@ async def get_student_dashboard(
                     allow_late=a.allow_late,
                     is_published=a.is_published,
                     problems=[],
-                    user_attempts=0,
-                    user_total_score=0.0,
+                    user_attempts=att_cnt or 0,
+                    user_total_score=float(tot_sc or 0.0),
                     created_at=a.created_at,
                 )
             )

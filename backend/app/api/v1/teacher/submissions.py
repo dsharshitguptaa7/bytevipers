@@ -6,7 +6,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.core.database import get_db
 from app.core.dependencies import require_permission
-from app.models import Submission, Problem, User, SubmissionStatus, Notification
+from app.models import (
+    Submission, Problem, User, SubmissionStatus, Notification,
+    AssignmentProblem, AssignmentSubmission, ProblemProgress, Verdict
+)
 from app.schemas import SubmissionOut, SubmissionEvaluateRequest
 
 router = APIRouter(prefix="/submissions", tags=["Teacher Submission Review & Manual Evaluation"])
@@ -143,6 +146,100 @@ async def get_teacher_submission_detail(
         test_results=None,
     )
 
+async def _sync_submission_evaluation(db: AsyncSession, sub: Submission, now_utc: datetime):
+    """
+    Synchronizes manual evaluation marks, verdict, assignment submission scores, and problem progress.
+    Ensures idempotency: re-evaluating updates existing scores without creating duplicates.
+    """
+    # 1. Update verdict based on marks
+    if sub.marks is not None:
+        if sub.marks > 0:
+            sub.verdict = Verdict.Accepted.value if sub.marks >= sub.max_marks else "Partial"
+        else:
+            sub.verdict = Verdict.WrongAnswer.value
+
+    # 2. Synchronize Assignment and points if part of an assignment
+    if sub.assignment_id:
+        ap_stmt = select(AssignmentProblem).where(
+            AssignmentProblem.assignment_id == sub.assignment_id,
+            AssignmentProblem.problem_id == sub.problem_id,
+        )
+        ap_res = await db.execute(ap_stmt)
+        ap = ap_res.scalar_one_or_none()
+
+        assigned_points = ap.points if ap else (sub.max_marks or 100.0)
+        if sub.marks is not None:
+            if sub.max_marks and sub.max_marks > 0:
+                earned_points = round((sub.marks / sub.max_marks) * assigned_points, 2)
+            else:
+                earned_points = sub.marks
+        else:
+            earned_points = 0.0
+
+        as_stmt = select(AssignmentSubmission).where(
+            AssignmentSubmission.assignment_id == sub.assignment_id,
+            AssignmentSubmission.student_id == sub.user_id,
+            AssignmentSubmission.problem_id == sub.problem_id,
+        )
+        as_res = await db.execute(as_stmt)
+        as_sub = as_res.scalar_one_or_none()
+        if as_sub:
+            as_sub.score = earned_points
+            as_sub.submission_id = sub.id
+        else:
+            as_sub = AssignmentSubmission(
+                assignment_id=sub.assignment_id,
+                student_id=sub.user_id,
+                problem_id=sub.problem_id,
+                submission_id=sub.id,
+                score=earned_points,
+                attempt_number=1,
+                submitted_at=sub.submitted_at or now_utc,
+            )
+            db.add(as_sub)
+
+    # 3. Synchronize ProblemProgress
+    prog_stmt = select(ProblemProgress).where(
+        ProblemProgress.user_id == sub.user_id,
+        ProblemProgress.problem_id == sub.problem_id,
+    )
+    prog_res = await db.execute(prog_stmt)
+    prog = prog_res.scalar_one_or_none()
+
+    if sub.marks is not None and sub.marks > 0:
+        if prog:
+            prog.status = "SOLVED"
+            prog.best_submission_id = sub.id
+            if not prog.solved_at:
+                prog.solved_at = now_utc
+            prog.updated_at = now_utc
+        else:
+            prog = ProblemProgress(
+                user_id=sub.user_id,
+                problem_id=sub.problem_id,
+                status="SOLVED",
+                best_submission_id=sub.id,
+                attempts_count=1,
+                solved_at=now_utc,
+            )
+            db.add(prog)
+    else:
+        # sub.marks == 0.0
+        if prog:
+            if prog.status != "SOLVED":
+                prog.status = "ATTEMPTED"
+            prog.best_submission_id = sub.id
+            prog.updated_at = now_utc
+        else:
+            prog = ProblemProgress(
+                user_id=sub.user_id,
+                problem_id=sub.problem_id,
+                status="ATTEMPTED",
+                best_submission_id=sub.id,
+                attempts_count=1,
+            )
+            db.add(prog)
+
 @router.put("/{submission_id}/evaluate", response_model=SubmissionOut)
 async def evaluate_submission(
     submission_id: int,
@@ -195,6 +292,8 @@ async def evaluate_submission(
         db.add(notif)
     else:
         sub.status = SubmissionStatus.EVALUATED.value
+
+    await _sync_submission_evaluation(db, sub, now_utc)
 
     await db.commit()
     await db.refresh(sub)
@@ -262,6 +361,8 @@ async def publish_submission_evaluation(
     now_utc = datetime.now(timezone.utc)
     sub.status = SubmissionStatus.PUBLISHED.value
     sub.published_at = now_utc
+
+    await _sync_submission_evaluation(db, sub, now_utc)
 
     prob_title = sub.problem.title if sub.problem else "Coding Challenge"
     notif = Notification(

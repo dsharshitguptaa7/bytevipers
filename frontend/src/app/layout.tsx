@@ -3,6 +3,7 @@ import "./globals.css";
 import { AuthProvider } from "@/context/AuthContext";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
+import { MandatoryPasswordChangeModal } from "@/components/MandatoryPasswordChangeModal";
 
 export const metadata: Metadata = {
   title: "ByteVipers Coding Arena | Think. Code. Conquer.",
@@ -24,6 +25,7 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col bg-[#050608] text-[#F5F7FA] selection:bg-[#168BFF]/30 selection:text-[#36C5FF]">
         <AuthProvider>
           <Navbar />
+          <MandatoryPasswordChangeModal />
           <main className="flex-1 flex flex-col">{children}</main>
           <Footer />
         </AuthProvider>

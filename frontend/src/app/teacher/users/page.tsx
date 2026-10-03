@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import {
   Users, Shield, ShieldAlert, Key, Search, Loader2,
-  AlertCircle, CheckCircle2, X
+  AlertCircle, CheckCircle2, X, Copy, Check, Clock, AlertTriangle, Lock
 } from "lucide-react";
 
 const AVAILABLE_PERMISSIONS = [
@@ -36,6 +36,16 @@ export default function TeacherUsersPage() {
   const [suspendUser, setSuspendUser] = useState<any | null>(null);
   const [suspendReason, setSuspendReason] = useState("");
   const [modalLoading, setModalLoading] = useState(false);
+
+  // Password Recovery Assistance states
+  const [recoveryTargetUser, setRecoveryTargetUser] = useState<any | null>(null);
+  const [recoveryResult, setRecoveryResult] = useState<{
+    temporary_password: string;
+    expires_at: string;
+    username: string;
+    full_name: string;
+  } | null>(null);
+  const [recoveryCopied, setRecoveryCopied] = useState(false);
 
   const loadUsers = async () => {
     setLoading(true);
@@ -91,6 +101,42 @@ export default function TeacherUsersPage() {
       setError(err.message || "Failed to change user suspension state.");
     } finally {
       setModalLoading(false);
+    }
+  };
+
+  const openRecoveryModal = (targetUser: any) => {
+    setRecoveryTargetUser(targetUser);
+  };
+
+  const handleConfirmRecovery = async () => {
+    if (!recoveryTargetUser) return;
+    setModalLoading(true);
+    setError(null);
+    try {
+      const res = await api.assistPasswordRecovery(recoveryTargetUser.id);
+      setRecoveryResult({
+        temporary_password: res.temporary_password,
+        expires_at: res.expires_at,
+        username: res.username,
+        full_name: recoveryTargetUser.full_name,
+      });
+      setRecoveryTargetUser(null);
+      await loadUsers();
+    } catch (err: any) {
+      setError(err.message || "Failed to issue temporary recovery credentials.");
+    } finally {
+      setModalLoading(false);
+    }
+  };
+
+  const handleCopyCredential = async () => {
+    if (!recoveryResult) return;
+    try {
+      await navigator.clipboard.writeText(recoveryResult.temporary_password);
+      setRecoveryCopied(true);
+      setTimeout(() => setRecoveryCopied(false), 2500);
+    } catch {
+      // clipboard fallback
     }
   };
 
@@ -206,6 +252,25 @@ export default function TeacherUsersPage() {
                       )}
                     </td>
                     <td className="py-4 px-6 text-right space-x-2">
+                      <button
+                        onClick={() => openRecoveryModal(u)}
+                        disabled={
+                          u.id === currentUser?.id ||
+                          (u.role === "teacher" && !currentUser?.permissions?.includes("platform.superadmin"))
+                        }
+                        className="px-2.5 py-1.5 rounded-lg bg-[#0B0E14] text-[#36C5FF] border border-[#168BFF]/30 hover:bg-[#168BFF]/20 font-semibold disabled:opacity-30 transition-all inline-flex items-center gap-1.5"
+                        title={
+                          u.id === currentUser?.id
+                            ? "Cannot reset own password via admin tool"
+                            : u.role === "teacher" && !currentUser?.permissions?.includes("platform.superadmin")
+                            ? "Only Super Admins can assist Teacher accounts"
+                            : "Issue temporary recovery credentials"
+                        }
+                      >
+                        <Key className="w-3.5 h-3.5" />
+                        <span>Reset Password</span>
+                      </button>
+
                       {u.role === "teacher" && (
                         <button
                           onClick={() => openPermModal(u)}
@@ -348,6 +413,143 @@ export default function TeacherUsersPage() {
                 }`}
               >
                 {modalLoading ? "Saving..." : suspendUser.is_suspended ? "Confirm Reactivation" : "Confirm Suspension"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Password Recovery Confirmation Modal */}
+      {recoveryTargetUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+          <div className="w-full max-w-md rounded-2xl cyber-card border border-[#168BFF]/40 shadow-2xl p-6 glow-blue">
+            <div className="flex items-center gap-3 pb-4 border-b border-[#1C2330]">
+              <div className="w-10 h-10 rounded-xl bg-[#168BFF]/10 border border-[#168BFF]/30 flex items-center justify-center text-[#36C5FF]">
+                <Key className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-[#F5F7FA]">Admin Password Assistance</h3>
+                <p className="text-xs text-[#9AA6B5]">Issue temporary recovery credentials</p>
+              </div>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              <p className="text-xs text-[#F5F7FA]">
+                Target Account: <span className="font-bold text-[#36C5FF]">{recoveryTargetUser.full_name}</span> (@{recoveryTargetUser.username} • {recoveryTargetUser.email})
+              </p>
+
+              <div className="p-3.5 rounded-xl bg-[#0B0E14] border border-[#1C2330] space-y-2.5 text-xs text-[#9AA6B5]">
+                <div className="flex items-start gap-2">
+                  <ShieldAlert className="w-4 h-4 text-[#F5BD45] shrink-0 mt-0.5" />
+                  <span><strong className="text-[#F5F7FA]">Session Invalidation:</strong> All existing active logins and tokens will be revoked immediately.</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <Clock className="w-4 h-4 text-[#36C5FF] shrink-0 mt-0.5" />
+                  <span><strong className="text-[#F5F7FA]">24h Expiration:</strong> The temporary password expires in 24 hours if unused.</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <Lock className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                  <span><strong className="text-[#F5F7FA]">Mandatory Rotation:</strong> The user will be required to change their password upon their next login.</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-[#FFD978] shrink-0 mt-0.5" />
+                  <span><strong className="text-[#F5F7FA]">One-Time Display:</strong> The temporary password will be shown once and is NOT stored in plaintext.</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRecoveryTargetUser(null)}
+                className="px-3 py-1.5 rounded-lg text-xs text-[#9AA6B5] hover:text-[#F5F7FA]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={modalLoading}
+                onClick={handleConfirmRecovery}
+                className="px-4 py-1.5 rounded-lg text-xs font-bold bg-[#168BFF] text-white hover:bg-[#36C5FF] hover:text-[#050608] transition-all flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {modalLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Confirm & Generate Password"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* One-Time Credential Display Modal */}
+      {recoveryResult && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+          <div className="w-full max-w-lg rounded-2xl cyber-card border border-[#F5BD45]/50 shadow-2xl p-6 glow-gold">
+            <div className="flex items-center gap-3 pb-4 border-b border-[#1C2330]">
+              <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                <CheckCircle2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-[#F5F7FA]">Temporary Credential Issued</h3>
+                <p className="text-xs text-[#9AA6B5]">One-time security delivery</p>
+              </div>
+            </div>
+
+            <div className="mt-4 space-y-4">
+              <div>
+                <p className="text-xs text-[#9AA6B5]">
+                  Temporary password for <span className="font-bold text-[#F5F7FA]">{recoveryResult.full_name}</span> (@{recoveryResult.username}):
+                </p>
+
+                {/* Monospace Credential Box */}
+                <div className="mt-2 p-3.5 rounded-xl bg-[#0B0E14] border border-[#F5BD45]/40 flex items-center justify-between gap-3">
+                  <span className="font-mono text-sm sm:text-base font-bold text-[#FFD978] tracking-wider select-all break-all">
+                    {recoveryResult.temporary_password}
+                  </span>
+                  <button
+                    onClick={handleCopyCredential}
+                    className="px-3 py-1.5 rounded-lg bg-[#F5BD45]/20 hover:bg-[#F5BD45] text-[#FFD978] hover:text-[#050608] text-xs font-semibold flex items-center gap-1.5 transition-all shrink-0"
+                  >
+                    {recoveryCopied ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copy</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-[#F5BD45]/10 border border-[#F5BD45]/20 text-xs text-[#FFD978] space-y-1.5">
+                <p className="font-semibold flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>Important Security Notice</span>
+                </p>
+                <p className="text-[11px] text-[#9AA6B5]">
+                  • This password will <strong className="text-white">never be shown again</strong>. It is hashed immediately using bcrypt.
+                </p>
+                <p className="text-[11px] text-[#9AA6B5]">
+                  • Deliver this password directly to the user through a verified, secure communication channel.
+                </p>
+                <p className="text-[11px] text-[#9AA6B5]">
+                  • The user will be required to change this temporary password immediately upon login.
+                </p>
+                <p className="text-[11px] text-[#9AA6B5]">
+                  • Valid until: <span className="font-mono text-white">{new Date(recoveryResult.expires_at).toLocaleString()}</span> (24 hours).
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setRecoveryResult(null)}
+                className="cyber-btn-gold px-5 py-2 rounded-lg text-xs font-bold glow-gold"
+              >
+                I Have Delivered / Saved This Credential
               </button>
             </div>
           </div>

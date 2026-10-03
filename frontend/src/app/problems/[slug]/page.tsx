@@ -2,13 +2,14 @@
 
 import React, { useEffect, useState, use } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import {
   Play, Send, RotateCcw, CheckCircle2, XCircle, AlertTriangle,
   Clock, Terminal, Code2, Layers, Cpu, ChevronDown, Loader2,
-  ShieldAlert, Save, Award, MessageSquare, History, Check
+  ShieldAlert, Save, Award, MessageSquare, History, Check, Lock
 } from "lucide-react";
 
 // Dynamically import Monaco Editor to avoid SSR issues
@@ -17,13 +18,19 @@ const Editor = dynamic(() => import("@monaco-editor/react"), { ssr: false });
 export default function ProblemWorkspacePage({ params }: { params: Promise<{ slug: string }> }) {
   const resolvedParams = use(params);
   const slug = resolvedParams.slug;
+  const searchParams = useSearchParams();
+  const assignmentIdParam = searchParams.get("assignment_id");
+  const assignmentId = assignmentIdParam ? parseInt(assignmentIdParam, 10) : undefined;
+  const tabParam = searchParams.get("tab");
   const { user } = useAuth();
 
   const [problem, setProblem] = useState<any>(null);
   const [language, setLanguage] = useState<string>("python");
   const [code, setCode] = useState<string>("");
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"samples" | "custom" | "submissions">("samples");
+  const [activeTab, setActiveTab] = useState<"samples" | "custom" | "submissions">(
+    tabParam === "submissions" ? "submissions" : "samples"
+  );
   const [customInput, setCustomInput] = useState<string>("");
   const [selectedSampleIndex, setSelectedSampleIndex] = useState(0);
 
@@ -72,6 +79,11 @@ export default function ProblemWorkspacePage({ params }: { params: Promise<{ slu
     try {
       const history = await api.getMySubmissionHistory(problemId);
       setMySubmissions(history);
+      const finalSub = history.find((s: any) => !s.is_draft);
+      if (finalSub && finalSub.source_code) {
+        setCode(finalSub.source_code);
+        if (finalSub.language) setLanguage(finalSub.language);
+      }
     } catch {
       // ignore
     } finally {
@@ -79,14 +91,18 @@ export default function ProblemWorkspacePage({ params }: { params: Promise<{ slu
     }
   };
 
+  const existingFinalSub = mySubmissions.find((s: any) => !s.is_draft);
+  const isAlreadySubmitted = Boolean(existingFinalSub);
+
   const handleResetCode = () => {
+    if (isAlreadySubmitted) return;
     if (window.confirm("Reset code back to the original starter template?")) {
       setCode(problem?.starter_code || "def solve():\n    pass\n");
     }
   };
 
   const handleSaveDraft = async () => {
-    if (!problem || !user) return;
+    if (!problem || !user || isAlreadySubmitted) return;
     setSavingDraft(true);
     setDraftSavedMessage(null);
     try {
@@ -94,6 +110,7 @@ export default function ProblemWorkspacePage({ params }: { params: Promise<{ slu
         problem_id: problem.id,
         language,
         source_code: code,
+        assignment_id: assignmentId,
       });
       setDraftSavedMessage("Draft saved successfully!");
       setTimeout(() => setDraftSavedMessage(null), 3500);
@@ -105,7 +122,7 @@ export default function ProblemWorkspacePage({ params }: { params: Promise<{ slu
   };
 
   const handleSubmitSolution = async () => {
-    if (!problem || !user) return;
+    if (!problem || !user || isAlreadySubmitted) return;
     setSubmitting(true);
     setSubmissionSuccess(null);
     setSubmissionError(null);
@@ -116,11 +133,13 @@ export default function ProblemWorkspacePage({ params }: { params: Promise<{ slu
         problem_id: problem.id,
         language,
         source_code: code,
+        assignment_id: assignmentId,
       });
       setSubmissionSuccess(res);
       await loadHistory(problem.id);
     } catch (err: any) {
       setSubmissionError(err.message || "Failed to submit solution.");
+      await loadHistory(problem.id);
     } finally {
       setSubmitting(false);
     }
@@ -320,7 +339,8 @@ export default function ProblemWorkspacePage({ params }: { params: Promise<{ slu
             <div className="flex items-center gap-2">
               <button
                 onClick={handleResetCode}
-                className="p-1.5 rounded-lg text-[#9AA6B5] hover:text-[#F5F7FA] hover:bg-[#161D28] transition-colors cursor-pointer"
+                disabled={isAlreadySubmitted}
+                className="p-1.5 rounded-lg text-[#9AA6B5] hover:text-[#F5F7FA] hover:bg-[#161D28] transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 title="Reset starter template"
               >
                 <RotateCcw className="w-4 h-4" />
@@ -328,8 +348,8 @@ export default function ProblemWorkspacePage({ params }: { params: Promise<{ slu
 
               <button
                 onClick={handleSaveDraft}
-                disabled={savingDraft || !isVerified}
-                className="px-3.5 py-1.5 rounded-lg bg-[#161D28] hover:bg-[#1C2433] border border-[#1C2330] hover:border-[#168BFF]/50 text-[#F5F7FA] font-semibold text-xs transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                disabled={savingDraft || !isVerified || isAlreadySubmitted}
+                className="px-3.5 py-1.5 rounded-lg bg-[#161D28] hover:bg-[#1C2433] border border-[#1C2330] hover:border-[#168BFF]/50 text-[#F5F7FA] font-semibold text-xs transition-all flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
               >
                 {savingDraft ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5 text-[#36C5FF]" />}
                 Save Draft
@@ -345,16 +365,49 @@ export default function ProblemWorkspacePage({ params }: { params: Promise<{ slu
                 Run Code <span className="text-[10px] hidden sm:inline">(Sidelined)</span>
               </button>
 
-              <button
-                onClick={handleSubmitSolution}
-                disabled={submitting || !isVerified}
-                className="px-4 py-1.5 rounded-lg cyber-btn-gold text-xs transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-[0_0_15px_rgba(245,189,69,0.3)]"
-              >
-                {submitting ? <Loader2 className="w-3.5 h-3.5 animate-spin text-[#050608]" /> : <Send className="w-3.5 h-3.5 text-[#050608]" />}
-                Submit Solution
-              </button>
+              {isAlreadySubmitted ? (
+                <div className="flex items-center gap-2">
+                  <span className="px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-bold text-xs flex items-center gap-1.5 font-mono shadow-[0_0_12px_rgba(16,185,129,0.2)]">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    {existingFinalSub?.status === "PUBLISHED" || existingFinalSub?.status === "EVALUATED"
+                      ? `Evaluated (${existingFinalSub?.marks ?? 0}/${existingFinalSub?.max_marks ?? 100} pts)`
+                      : existingFinalSub?.status === "UNDER_REVIEW"
+                      ? "Under Review"
+                      : "Submitted (Locked)"}
+                  </span>
+                </div>
+              ) : (
+                <button
+                  onClick={handleSubmitSolution}
+                  disabled={submitting || !isVerified}
+                  className="px-4 py-1.5 rounded-lg cyber-btn-gold text-xs transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-[0_0_15px_rgba(245,189,69,0.3)]"
+                >
+                  {submitting ? <Loader2 className="w-3.5 h-3.5 animate-spin text-[#050608]" /> : <Send className="w-3.5 h-3.5 text-[#050608]" />}
+                  Submit Solution
+                </button>
+              )}
             </div>
           </div>
+
+          {/* Locked Status Banner if Already Submitted */}
+          {isAlreadySubmitted && (
+            <div className="bg-[#0B0E14] border-b border-[#1C2330] px-4 py-2 flex items-center justify-between text-xs text-[#9AA6B5]">
+              <div className="flex items-center gap-2">
+                <Lock className="w-3.5 h-3.5 text-[#36C5FF] shrink-0" />
+                <span className="text-[#F5F7FA]">
+                  {existingFinalSub?.status === "PUBLISHED" || existingFinalSub?.status === "EVALUATED"
+                    ? `This problem was evaluated by your instructor (Marks: ${existingFinalSub?.marks ?? 0}/${existingFinalSub?.max_marks ?? 100}).`
+                    : "Solution received and saved persistently. Resubmission is locked."}
+                </span>
+              </div>
+              <button
+                onClick={() => setActiveTab("submissions")}
+                className="text-[#36C5FF] hover:underline font-semibold text-xs ml-4 cursor-pointer"
+              >
+                View Marks &amp; Feedback →
+              </button>
+            </div>
+          )}
 
           {/* Monaco Editor Container */}
           <div className="flex-1 min-h-[300px] relative bg-[#050608]">
@@ -372,6 +425,7 @@ export default function ProblemWorkspacePage({ params }: { params: Promise<{ slu
                 scrollBeyondLastLine: false,
                 automaticLayout: true,
                 tabSize: 4,
+                readOnly: isAlreadySubmitted,
               }}
             />
           </div>
@@ -534,21 +588,25 @@ export default function ProblemWorkspacePage({ params }: { params: Promise<{ slu
                           </div>
 
                           {/* Evaluation Status & Marks */}
-                          {sub.status === "PUBLISHED" && sub.marks !== null && sub.marks !== undefined ? (
+                          {(sub.status === "PUBLISHED" || sub.status === "EVALUATED" || (sub.marks !== null && sub.marks !== undefined)) ? (
                             <div className="mt-2 pt-2 border-t border-[#1E293B] grid grid-cols-1 sm:grid-cols-2 gap-3">
                               <div className="flex items-center gap-2">
                                 <Award className="w-4 h-4 text-[#F5B942]" />
                                 <span className="text-xs text-[#94A3B8]">Marks:</span>
                                 <span className="text-sm font-extrabold text-emerald-400 font-mono">
-                                  {sub.marks} / {sub.max_marks || 100}
+                                  {sub.marks ?? 0} / {sub.max_marks || 100}
                                 </span>
                               </div>
-                              {sub.teacher_feedback && (
+                              {sub.teacher_feedback ? (
                                 <div className="sm:col-span-2 bg-[#0B1020] p-2.5 rounded-lg border border-[#1E293B] text-xs">
                                   <div className="flex items-center gap-1.5 text-[#38BDF8] font-bold mb-1">
                                     <MessageSquare className="w-3.5 h-3.5" /> Teacher Feedback:
                                   </div>
                                   <p className="text-[#CBD5E1] whitespace-pre-wrap">{sub.teacher_feedback}</p>
+                                </div>
+                              ) : (
+                                <div className="sm:col-span-2 text-[11px] text-[#5F6B7C] italic">
+                                  No written remarks provided.
                                 </div>
                               )}
                             </div>

@@ -16,6 +16,7 @@ export interface User {
   suspension_reason?: string;
   permissions: string[];
   verification_status?: "not_submitted" | "pending" | "approved" | "rejected" | string;
+  must_change_password?: boolean;
   created_at: string;
 }
 

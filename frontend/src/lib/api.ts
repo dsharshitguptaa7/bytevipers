@@ -59,6 +59,13 @@ class ApiClient {
     });
   }
 
+  async changePassword(data: { current_password: string; new_password: string }) {
+    return this.request<{ access_token: string; refresh_token: string; user: any }>("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
   // --- Verification Endpoints ---
   async getMyVerification() {
     return this.request<any>("/verification/me");
@@ -110,15 +117,16 @@ class ApiClient {
     });
   }
 
-  async saveSubmissionDraft(data: { problem_id: number; language?: string; source_code: string }) {
+  async saveSubmissionDraft(data: { problem_id: number; language?: string; source_code: string; assignment_id?: number }) {
     return this.request<any>("/submissions/draft", {
       method: "POST",
       body: JSON.stringify(data),
     });
   }
 
-  async getSubmissionDraft(problemId: number) {
-    return this.request<any>(`/submissions/draft?problem_id=${problemId}`);
+  async getSubmissionDraft(problemId: number, assignmentId?: number) {
+    const q = assignmentId ? `?problem_id=${problemId}&assignment_id=${assignmentId}` : `?problem_id=${problemId}`;
+    return this.request<any>(`/submissions/draft${q}`);
   }
 
   async submitCode(data: { problem_id: number; language?: string; source_code: string; assignment_id?: number }) {
@@ -468,6 +476,19 @@ class ApiClient {
     return this.request<any>(`/teacher/platform/users/${userId}/suspend`, {
       method: "PATCH",
       body: JSON.stringify({ is_suspended: isSuspended, reason }),
+    });
+  }
+
+  async assistPasswordRecovery(userId: number) {
+    return this.request<{
+      message: string;
+      user_id: number;
+      username: string;
+      temporary_password: string;
+      expires_at: string;
+      must_change_password: boolean;
+    }>(`/teacher/platform/users/${userId}/password-assistance`, {
+      method: "POST",
     });
   }
 

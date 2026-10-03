@@ -1,14 +1,61 @@
-from datetime import datetime, timezone
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import secrets
+import string
+from collections import defaultdict
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional, Dict
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from app.core.database import get_db
+from app.core.security import get_password_hash
 from app.core.dependencies import require_permission, require_teacher
 from app.models import User, Permission, AuditLog, StudentVerification
-from app.schemas import UserOut, AuditLogOut
+from app.schemas import UserOut, AuditLogOut, PasswordAssistanceResponse
+
+# In-memory sliding window rate tracker: admin_id -> list of attempt datetimes
+_STAFF_RECOVERY_ATTEMPTS: Dict[int, List[datetime]] = defaultdict(list)
+_MAX_RECOVERY_ATTEMPTS = 5
+_RECOVERY_WINDOW_SECONDS = 600  # 10 minutes
+
+def _is_rate_limited(staff_id: int) -> bool:
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=_RECOVERY_WINDOW_SECONDS)
+    # Filter attempts within window
+    _STAFF_RECOVERY_ATTEMPTS[staff_id] = [
+        t for t in _STAFF_RECOVERY_ATTEMPTS[staff_id] if t > cutoff
+    ]
+    if len(_STAFF_RECOVERY_ATTEMPTS[staff_id]) >= _MAX_RECOVERY_ATTEMPTS:
+        return True
+    _STAFF_RECOVERY_ATTEMPTS[staff_id].append(now)
+    return False
+
+def clear_recovery_rate_limits() -> None:
+    _STAFF_RECOVERY_ATTEMPTS.clear()
+
+def generate_secure_temporary_password() -> str:
+    """Generate high-entropy 14-char temporary credential with mixed charset."""
+    specials = "!@#$%&*-_+"
+    # Guarantee at least 2 uppercase, 2 lowercase, 2 digits, 2 symbols
+    chars = [
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.digits),
+        secrets.choice(string.digits),
+        secrets.choice(specials),
+        secrets.choice(specials),
+    ]
+    all_allowed = string.ascii_letters + string.digits + specials
+    chars += [secrets.choice(all_allowed) for _ in range(6)]
+    # Cryptographic shuffle
+    shuffled = chars[:]
+    for i in range(len(shuffled) - 1, 0, -1):
+        j = secrets.randbelow(i + 1)
+        shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+    return "".join(shuffled)
 
 router = APIRouter(prefix="/platform", tags=["Teacher Platform & Account Controls"])
 
@@ -191,3 +238,88 @@ async def list_audit_logs(
         )
         for log in logs
     ]
+
+@router.post("/users/{user_id}/password-assistance", response_model=PasswordAssistanceResponse)
+async def assist_user_password(
+    user_id: int,
+    request: Request,
+    current_user: User = Depends(require_permission("users.manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    # Self-assistance prevention
+    if current_user.id == user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot perform admin password assistance on your own account. Use the standard password change feature.",
+        )
+
+    # Rate limiting for abuse prevention
+    if _is_rate_limited(current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Password assistance rate limit exceeded. Please wait a few minutes before issuing more temporary credentials.",
+        )
+
+    # Fetch target user
+    u_res = await db.execute(
+        select(User).options(selectinload(User.permissions)).where(User.id == user_id)
+    )
+    target_user = u_res.scalar_one_or_none()
+    if not target_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
+    # Privilege escalation safeguard
+    caller_perms = {p.name for p in current_user.permissions}
+    is_caller_superadmin = "platform.superadmin" in caller_perms
+
+    target_perms = {p.name for p in target_user.permissions}
+    is_target_superadmin = "platform.superadmin" in target_perms
+
+    # Non-superadmin cannot reset any Teacher/Instructor or Superadmin
+    if target_user.role == "teacher" and not is_caller_superadmin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Privilege escalation prevented: Only platform super administrators can assist in recovering credentials for instructor/teacher accounts.",
+        )
+
+    # Even superadmin cannot reset another superadmin unless caller is superadmin
+    if is_target_superadmin and not is_caller_superadmin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Privilege escalation prevented: Cannot reset credentials for a platform super administrator.",
+        )
+
+    # Generate secure temporary credential
+    temp_password = generate_secure_temporary_password()
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+
+    target_user.hashed_password = get_password_hash(temp_password)
+    target_user.must_change_password = True
+    target_user.temp_password_expires_at = expires_at
+    target_user.token_version = (getattr(target_user, "token_version", 1) or 1) + 1
+    target_user.updated_at = datetime.now(timezone.utc)
+
+    # Audit log (CRITICAL: Do NOT log the plaintext password)
+    client_ip = request.client.host if request.client else None
+    db.add(AuditLog(
+        user_id=current_user.id,
+        action="ADMIN_PASSWORD_ASSISTANCE",
+        entity_type="user",
+        entity_id=str(target_user.id),
+        details=(
+            f"Admin {current_user.username} issued temporary recovery credentials for user "
+            f"{target_user.username} ({target_user.email}). Temporary password expires at {expires_at.isoformat()}."
+        ),
+        ip_address=client_ip,
+    ))
+
+    await db.commit()
+
+    return PasswordAssistanceResponse(
+        message="Temporary password successfully generated. The user must rotate their password upon next login.",
+        user_id=target_user.id,
+        username=target_user.username,
+        temporary_password=temp_password,
+        expires_at=expires_at,
+        must_change_password=True,
+    )

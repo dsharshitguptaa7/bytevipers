@@ -34,6 +34,15 @@ async def get_current_user_optional(
     )
     result = await db.execute(query)
     user = result.scalar_one_or_none()
+    if not user:
+        return None
+
+    # Check session invalidation: if token includes a version, it must match user.token_version
+    token_ver = payload.get("ver")
+    if token_ver is not None and user.token_version is not None:
+        if token_ver != user.token_version:
+            return None
+
     return user
 
 async def require_authenticated_user(
